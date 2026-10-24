@@ -47,6 +47,21 @@ pub struct RealTimeBackend {
     loaded: bool,
 }
 
+/// Hands a packet to the receiving side.
+///
+/// The receiver is dropped while the capture shuts down, and the driver can still call back
+/// once more. A panic inside this `extern` callback would abort the whole process, so a packet
+/// that has nowhere to go is discarded instead.
+fn deliver_packet(sender: &mpsc::Sender<Packet>, packet: Packet) -> bool {
+    match sender.send(packet) {
+        Ok(()) => true,
+        Err(_) => {
+            debug!("Packet receiver is gone, dropping the packet");
+            false
+        }
+    }
+}
+
 extern "stdcall" fn event_callback(
     _context: *mut c_void,
     event_info: *const c_api::PacketMonitorStreamEventInfo,
@@ -176,7 +191,9 @@ extern "stdcall" fn data_callback(
 
     // let sender = context.sender.clone();
     // trace!("lock time: {:?}", start.elapsed().as_nanos());
-    context.sender.send(packet).unwrap();
+    if !deliver_packet(&context.sender, packet) {
+        return;
+    }
     // trace!("send time: {:?}", start.elapsed().as_nanos());
 
     #[cfg(feature = "tokio")]
@@ -418,5 +435,33 @@ impl CaptureBackend for RealTimeBackend {
 impl Drop for RealTimeBackend {
     fn drop(&mut self) {
         self.unload().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packet(component_id: u16) -> Packet {
+        Packet {
+            component_id,
+            payload: PacketPayload::Ethernet(vec![1, 2, 3]),
+        }
+    }
+
+    #[test]
+    fn a_packet_for_a_dropped_receiver_is_discarded() {
+        let (sender, receiver) = mpsc::channel();
+        drop(receiver);
+
+        assert!(!deliver_packet(&sender, packet(7)));
+    }
+
+    #[test]
+    fn a_packet_for_a_live_receiver_is_passed_on() {
+        let (sender, receiver) = mpsc::channel();
+
+        assert!(deliver_packet(&sender, packet(7)));
+        assert_eq!(receiver.try_recv(), Ok(packet(7)));
     }
 }
