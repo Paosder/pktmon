@@ -486,11 +486,17 @@ mod tests {
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
     }
 
+    // The only test that touches the process-wide counter.
     #[test]
-    fn the_public_count_reads_the_process_wide_counter() {
-        assert_eq!(
-            crate::packets_dropped_after_receiver_closed(),
-            PACKETS_DROPPED_AFTER_RECEIVER_CLOSED.load(Ordering::Relaxed)
-        );
+    fn the_public_count_reports_drops_into_the_process_wide_counter() {
+        let (sender, receiver) = mpsc::channel();
+        drop(receiver);
+
+        assert!(!deliver_packet(
+            &sender,
+            packet(7),
+            &PACKETS_DROPPED_AFTER_RECEIVER_CLOSED
+        ));
+        assert_eq!(crate::packets_dropped_after_receiver_closed(), 1);
     }
 }
