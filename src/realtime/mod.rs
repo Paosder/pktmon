@@ -3,7 +3,10 @@ use std::{
     ffi::{OsString, c_void},
     os::windows::ffi::OsStringExt,
     ptr::slice_from_raw_parts,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
 
@@ -47,15 +50,24 @@ pub struct RealTimeBackend {
     loaded: bool,
 }
 
+static PACKETS_DROPPED_AFTER_RECEIVER_CLOSED: AtomicU64 = AtomicU64::new(0);
+
+/// How many packets the real-time callback discarded because their receiver was already gone,
+/// counted across every capture since the process started.
+pub fn packets_dropped_after_receiver_closed() -> u64 {
+    PACKETS_DROPPED_AFTER_RECEIVER_CLOSED.load(Ordering::Relaxed)
+}
+
 /// Hands a packet to the receiving side.
 ///
 /// The receiver is dropped while the capture shuts down, and the driver can still call back
 /// once more. A panic inside this `extern` callback would abort the whole process, so a packet
-/// that has nowhere to go is discarded instead.
-fn deliver_packet(sender: &mpsc::Sender<Packet>, packet: Packet) -> bool {
+/// that has nowhere to go is discarded instead and counted in `dropped`.
+fn deliver_packet(sender: &mpsc::Sender<Packet>, packet: Packet, dropped: &AtomicU64) -> bool {
     match sender.send(packet) {
         Ok(()) => true,
         Err(_) => {
+            dropped.fetch_add(1, Ordering::Relaxed);
             debug!("Packet receiver is gone, dropping the packet");
             false
         }
@@ -191,7 +203,11 @@ extern "stdcall" fn data_callback(
 
     // let sender = context.sender.clone();
     // trace!("lock time: {:?}", start.elapsed().as_nanos());
-    if !deliver_packet(&context.sender, packet) {
+    if !deliver_packet(
+        &context.sender,
+        packet,
+        &PACKETS_DROPPED_AFTER_RECEIVER_CLOSED,
+    ) {
         return;
     }
     // trace!("send time: {:?}", start.elapsed().as_nanos());
@@ -450,18 +466,31 @@ mod tests {
     }
 
     #[test]
-    fn a_packet_for_a_dropped_receiver_is_discarded() {
+    fn a_packet_for_a_dropped_receiver_is_discarded_and_counted() {
         let (sender, receiver) = mpsc::channel();
         drop(receiver);
+        let dropped = AtomicU64::new(0);
 
-        assert!(!deliver_packet(&sender, packet(7)));
+        assert!(!deliver_packet(&sender, packet(7), &dropped));
+        assert!(!deliver_packet(&sender, packet(8), &dropped));
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
     }
 
     #[test]
-    fn a_packet_for_a_live_receiver_is_passed_on() {
+    fn a_packet_for_a_live_receiver_is_passed_on_and_not_counted() {
         let (sender, receiver) = mpsc::channel();
+        let dropped = AtomicU64::new(0);
 
-        assert!(deliver_packet(&sender, packet(7)));
+        assert!(deliver_packet(&sender, packet(7), &dropped));
         assert_eq!(receiver.try_recv(), Ok(packet(7)));
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_public_count_reads_the_process_wide_counter() {
+        assert_eq!(
+            crate::packets_dropped_after_receiver_closed(),
+            PACKETS_DROPPED_AFTER_RECEIVER_CLOSED.load(Ordering::Relaxed)
+        );
     }
 }

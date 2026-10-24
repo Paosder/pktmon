@@ -56,6 +56,7 @@ use filter::PktMonFilter;
 use legacy::{EtlConsumer, LegacyBackend};
 use log::{debug, info};
 use realtime::RealTimeBackend;
+pub use realtime::packets_dropped_after_receiver_closed;
 use std::{
     fmt::Debug,
     io,
