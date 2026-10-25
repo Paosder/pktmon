@@ -56,6 +56,7 @@ use filter::PktMonFilter;
 use legacy::{EtlConsumer, LegacyBackend};
 use log::{debug, info};
 use realtime::RealTimeBackend;
+pub use delay::{DELAY_BOUNDS_MS, DELAY_BUCKETS, DelaySnapshot, take_delivery_delay};
 pub use realtime::packets_dropped_after_receiver_closed;
 use std::{
     fmt::Debug,
@@ -65,7 +66,9 @@ use std::{
     time::Duration,
 };
 
+mod clock;
 mod ctypes;
+mod delay;
 mod dll;
 pub mod filter;
 mod legacy;

@@ -22,7 +22,8 @@ use windows::{
             EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD, EVENT_TRACE_CONTROL_FLUSH,
             EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_INDEPENDENT_SESSION_MODE, EVENT_TRACE_LOGFILEA,
             EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2, OpenTraceA,
-            PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
+            PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_RAW_TIMESTAMP,
+            PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE,
             PROPERTY_DATA_DESCRIPTOR, ProcessTrace, StartTraceA, TRACE_LEVEL_INFORMATION,
             TdhGetProperty, WNODE_FLAG_TRACED_GUID,
         },
@@ -230,8 +231,19 @@ impl Drop for EtwSession {
     }
 }
 
+/// How the live consumer reads the session. By default `ProcessTrace` rewrites each event's time
+/// stamp as system time (100 ns since 1601), which cannot be compared with the performance
+/// counter the session stamps with. The raw mode leaves it in the session's own clock, so the
+/// delivery delay is the counter now minus the stamp.
+const LIVE_TRACE_MODE: u32 =
+    PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
+
 struct ConsumerContext {
     running: bool,
+
+    /// True for the live consumer, whose stamps are raw performance counter ticks. A file
+    /// consumer's stamps are converted and old, so measuring them would only add noise.
+    measure_delay: bool,
 
     sender: Sender<Packet>,
 
@@ -254,8 +266,7 @@ impl EtwConsumer {
     ) -> win::Result<(Self, Receiver<Packet>)> {
         let mut trace = EVENT_TRACE_LOGFILEA::default();
         trace.LoggerName = PSTR::from_raw(LOGGER_NAME.0 as *mut u8);
-        trace.Anonymous1.ProcessTraceMode =
-            PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+        trace.Anonymous1.ProcessTraceMode = LIVE_TRACE_MODE;
 
         trace.Anonymous2.EventRecordCallback = Some(Self::event_record_callback);
         trace.BufferCallback = Some(Self::event_buffer_callback);
@@ -264,6 +275,7 @@ impl EtwConsumer {
 
         let mut boxed = Box::new(RwLock::new(ConsumerContext {
             running: true,
+            measure_delay: true,
             sender,
 
             #[cfg(feature = "tokio")]
@@ -342,6 +354,10 @@ impl EtwConsumer {
 
             // Frame Payload
             if record.EventHeader.EventDescriptor.Id == 160 {
+                if crate::lock::read(context).measure_delay {
+                    crate::clock::record_event_age(record.EventHeader.TimeStamp);
+                }
+
                 let packet_type = match get_event_property_value_u32(event_record, w!("PacketType"))
                 {
                     Ok(packet_type) => packet_type,
@@ -490,6 +506,7 @@ impl EtlConsumer {
 
         let mut boxed = Box::new(RwLock::new(ConsumerContext {
             running: true,
+            measure_delay: false,
             sender,
 
             #[cfg(feature = "tokio")]
