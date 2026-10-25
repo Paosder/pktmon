@@ -342,6 +342,8 @@ impl EtwConsumer {
 
             // Frame Payload
             if record.EventHeader.EventDescriptor.Id == 160 {
+                crate::clock::record_event_age(record.EventHeader.TimeStamp);
+
                 let packet_type = match get_event_property_value_u32(event_record, w!("PacketType"))
                 {
                     Ok(packet_type) => packet_type,
