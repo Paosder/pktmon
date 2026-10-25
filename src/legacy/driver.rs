@@ -3,7 +3,7 @@ use std::mem::transmute;
 
 use log::{debug, trace};
 use windows::Win32::Foundation::{GetLastError, HMODULE, NO_ERROR, WIN32_ERROR};
-use windows::Win32::System::LibraryLoader::{FreeLibrary, GetProcAddress, LoadLibraryA};
+use windows::Win32::System::LibraryLoader::{FreeLibrary, GetProcAddress};
 use windows::core as win;
 use windows::core::s;
 
@@ -56,7 +56,7 @@ struct PktMonApi {
 impl Driver {
     pub fn new() -> win::Result<Self> {
         unsafe {
-            let module = LoadLibraryA(s!("PktMonApi.dll"))?;
+            let module = crate::dll::load_pktmon_api()?;
 
             macro_rules! get_proc_address {
                 ($name:expr) => {

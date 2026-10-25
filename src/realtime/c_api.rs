@@ -4,7 +4,7 @@ use windows::Win32::Foundation::{GetLastError, HMODULE};
 use windows::Win32::System::LibraryLoader::FreeLibrary;
 use windows::core as win;
 use windows::{
-    Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA},
+    Win32::System::LibraryLoader::GetProcAddress,
     core::{HRESULT, PCWSTR},
     s,
 };
@@ -286,7 +286,7 @@ pub struct PacketMonitorApi {
 impl PacketMonitorApi {
     pub fn new() -> win::Result<Self> {
         unsafe {
-            let module = LoadLibraryA(s!("PktMonApi.dll"))?;
+            let module = crate::dll::load_pktmon_api()?;
 
             macro_rules! get_proc_address {
                 ($name:expr) => {

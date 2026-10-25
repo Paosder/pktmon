@@ -9,13 +9,13 @@ use std::{
     time::Duration,
 };
 
-use crate::{Packet, PacketPayload, util::s_with_len};
+use crate::{Packet, PacketPayload, limits::logged_payload_len, util::s_with_len};
 use log::{debug, error, trace};
 use windows::{
     Win32::{
         Foundation::{
-            ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND, GetLastError, INVALID_HANDLE_VALUE,
-            NO_ERROR,
+            ERROR_INVALID_DATA, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND, GetLastError,
+            INVALID_HANDLE_VALUE, NO_ERROR,
         },
         System::Diagnostics::Etw::{
             CONTROLTRACE_HANDLE, CloseTrace, ControlTraceA, EVENT_CONTROL_CODE_DISABLE_PROVIDER,
@@ -278,7 +278,7 @@ impl EtwConsumer {
             stopped: false,
         };
 
-        this.context.write().unwrap().running = true;
+        crate::lock::write(&this.context).running = true;
 
         unsafe {
             trace.Context = context_ptr as *mut c_void;
@@ -312,8 +312,7 @@ impl EtwConsumer {
 
         {
             // Scope for the lock
-            let mut context = self.context.write().unwrap();
-            context.running = false;
+            crate::lock::write(&self.context).running = false;
         }
 
         // Force the trace to close
@@ -326,7 +325,7 @@ impl EtwConsumer {
 
         // Join the thread
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            join_thread(thread);
         }
 
         Ok(())
@@ -422,9 +421,7 @@ impl EtwConsumer {
             &*(context as *mut RwLock<ConsumerContext>)
         };
 
-        let context = context.read().unwrap();
-
-        if !context.running {
+        if !crate::lock::read(context).running {
             return 0;
         }
 
@@ -566,7 +563,7 @@ impl EtlConsumer {
             debug!("ETL processing complete, closing trace");
             CloseTrace(process_handle);
             debug!("ETL trace closed");
-            context.write().unwrap().running = false;
+            crate::lock::write(&context).running = false;
         }));
 
         debug!("ETL processing started in background thread");
@@ -592,14 +589,14 @@ impl EtlConsumer {
                 packets.push(packet);
             }
 
-            if !self.context.read().unwrap().running {
+            if !crate::lock::read(&self.context).running {
                 break;
             }
         }
 
         // Join the thread to ensure processing is complete
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            join_thread(thread);
         }
 
         self.stopped = true;
@@ -629,8 +626,7 @@ impl EtlConsumer {
         self.stopped = true;
 
         {
-            let mut context = self.context.write().unwrap();
-            context.running = false;
+            crate::lock::write(&self.context).running = false;
         }
 
         // Force the trace to close
@@ -640,7 +636,7 @@ impl EtlConsumer {
 
         // Join the thread
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            join_thread(thread);
         }
 
         debug!("ETL processing stopped");
@@ -657,13 +653,26 @@ impl Drop for EtlConsumer {
     }
 }
 
+/// Waits for a consumer thread. The thread only calls into Windows and cannot have panicked,
+/// and a panic here would also fire from `Drop`.
+fn join_thread(thread: JoinHandle<()>) {
+    if thread.join().is_err() {
+        error!("The ETW consumer thread ended with a panic");
+    }
+}
+
 unsafe fn get_event_property_value_bytes(
     event_record: *mut EVENT_RECORD,
     property_name: PCWSTR,
     property_size: u32,
 ) -> win::Result<Vec<u8>> {
+    // The size comes from the event itself and the buffer is allocated inside the ETW callback.
+    let Some(property_size) = logged_payload_len(property_size) else {
+        return Err(ERROR_INVALID_DATA.into());
+    };
+
     unsafe {
-        let mut buffer = vec![0; property_size as usize];
+        let mut buffer = vec![0; property_size];
 
         let error = TdhGetProperty(
             event_record,
