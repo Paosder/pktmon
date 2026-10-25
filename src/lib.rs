@@ -66,6 +66,7 @@ use std::{
 };
 
 mod ctypes;
+mod dll;
 pub mod filter;
 mod legacy;
 mod realtime;
