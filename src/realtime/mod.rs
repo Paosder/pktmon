@@ -450,7 +450,9 @@ impl CaptureBackend for RealTimeBackend {
 
 impl Drop for RealTimeBackend {
     fn drop(&mut self) {
-        self.unload().unwrap();
+        if let Err(e) = self.unload() {
+            error!("Failed to unload the real-time capture: {:?}", e);
+        }
     }
 }
 

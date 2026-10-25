@@ -37,7 +37,7 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
 
 pub fn install_shutdown_hook(hook: impl FnOnce() + Send + 'static) {
     SHUTDOWN_HOOK.call_once(|| unsafe {
-        *SHUTDOWN_CALLBACK.lock().unwrap() = Some(Box::new(hook));
+        *crate::lock::mutex(&SHUTDOWN_CALLBACK) = Some(Box::new(hook));
         SetConsoleCtrlHandler(Some(console_ctrl_handler), true);
     });
 }
