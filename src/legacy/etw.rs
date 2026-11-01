@@ -761,3 +761,19 @@ unsafe fn get_event_property_value_u16(
         Ok(u16::from_ne_bytes(bytes))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_live_session_asks_for_256_kib_buffers() {
+        let session = SessionProperties::default();
+
+        assert_eq!(session.properties.BufferSize, 256);
+        assert_eq!(
+            session.properties.LogFileMode,
+            EVENT_TRACE_INDEPENDENT_SESSION_MODE | EVENT_TRACE_REAL_TIME_MODE
+        );
+    }
+}
