@@ -257,7 +257,7 @@ impl RealTimeBackend {
             user_context: context_ptr as *mut c_void,
             event_callback: event_callback as *mut _,
             data_callback: data_callback as *mut _,
-            buffer_size_multiplier: 10, // Idk if this is a good default
+            buffer_size_multiplier: crate::probe::knob("PKTMON_PROBE_MULTIPLIER").map_or(10, |m| m as u16),
             truncation_size: 9000,      // Max value
         };
 

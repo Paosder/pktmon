@@ -74,6 +74,7 @@ pub mod filter;
 mod legacy;
 mod limits;
 mod lock;
+mod probe;
 mod realtime;
 pub mod stream;
 mod util;
@@ -264,9 +265,13 @@ impl Capture {
     pub fn new() -> io::Result<Self> {
         // Try to use the RealTimeBackend first (Windows 11+)
         // Fall back to LegacyBackend if RealTimeBackend is not available
-        let backend = match RealTimeBackend::new() {
-            Ok(backend) => DispatchCaptureBackend::RealTime(backend),
-            Err(_) => DispatchCaptureBackend::Legacy(LegacyBackend::new()?),
+        let backend = match std::env::var("PKTMON_PROBE_BACKEND").as_deref() {
+            Ok("legacy") => DispatchCaptureBackend::Legacy(LegacyBackend::new()?),
+            Ok("realtime") => DispatchCaptureBackend::RealTime(RealTimeBackend::new()?),
+            _ => match RealTimeBackend::new() {
+                Ok(backend) => DispatchCaptureBackend::RealTime(backend),
+                Err(_) => DispatchCaptureBackend::Legacy(LegacyBackend::new()?),
+            },
         };
 
         Ok(Self {
