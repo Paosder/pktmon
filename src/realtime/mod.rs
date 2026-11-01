@@ -222,8 +222,27 @@ extern "stdcall" fn data_callback(
     trace!("Total time: {:?}", start.elapsed().as_nanos());
 }
 
+/// The configuration for a real-time stream.
+///
+/// `buffer_size_multiplier` is how many base buffers (64 MiB each) the stream reserves.
+/// `truncation_size` cuts every frame at 9000 bytes, which is the largest the driver accepts.
+fn realtime_stream_config(
+    user_context: *mut c_void,
+    buffer_size_multiplier: u16,
+) -> c_api::PacketMonitorRealTimeStreamConfiguration {
+    c_api::PacketMonitorRealTimeStreamConfiguration {
+        user_context,
+        event_callback: event_callback as *mut _,
+        data_callback: data_callback as *mut _,
+        buffer_size_multiplier,
+        truncation_size: 9000, // Max value
+    }
+}
+
 impl RealTimeBackend {
-    pub fn new() -> std::io::Result<Self> {
+    /// Open a real-time capture whose stream buffer is `buffer_size_multiplier` times the
+    /// driver's base buffer (64 MiB).
+    pub fn new(buffer_size_multiplier: u16) -> std::io::Result<Self> {
         let api = c_api::PacketMonitorApi::new()?;
 
         #[cfg(feature = "tokio")]
@@ -253,13 +272,8 @@ impl RealTimeBackend {
         });
         let context_ptr = &*context_box as *const _;
 
-        let stream_config = c_api::PacketMonitorRealTimeStreamConfiguration {
-            user_context: context_ptr as *mut c_void,
-            event_callback: event_callback as *mut _,
-            data_callback: data_callback as *mut _,
-            buffer_size_multiplier: 10, // Idk if this is a good default
-            truncation_size: 9000,      // Max value
-        };
+        let stream_config =
+            realtime_stream_config(context_ptr as *mut c_void, buffer_size_multiplier);
 
         let mut stream = c_api::PacketMonitorRealTimeStream::default();
         (api.create_realtime_stream)(handle, &stream_config, &mut stream).ok()?;
@@ -486,6 +500,20 @@ mod tests {
         assert!(deliver_packet(&sender, packet(7), &dropped));
         assert_eq!(receiver.try_recv(), Ok(packet(7)));
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_stream_buffer_is_the_multiplier_the_caller_asked_for() {
+        let base = realtime_stream_config(std::ptr::null_mut(), 1);
+        assert_eq!(base.buffer_size_multiplier, 1);
+        let wide = realtime_stream_config(std::ptr::null_mut(), 10);
+        assert_eq!(wide.buffer_size_multiplier, 10);
+    }
+
+    #[test]
+    fn the_stream_cuts_every_frame_at_the_driver_maximum() {
+        let config = realtime_stream_config(std::ptr::null_mut(), 1);
+        assert_eq!(config.truncation_size, 9000);
     }
 
     // The only test that touches the process-wide counter.

@@ -259,12 +259,28 @@ impl Debug for Capture {
     }
 }
 
+/// The real-time stream buffer size multiplier used when the caller does not pick one.
+///
+/// The driver sizes the stream buffer as this multiple of its base buffer (64 MiB), so a capture
+/// reserves `multiplier` times that memory for as long as it lives. One base buffer is enough for
+/// the traffic this crate captures.
+pub const DEFAULT_BUFFER_SIZE_MULTIPLIER: u16 = 1;
+
 impl Capture {
-    /// Create a new capture instance.
+    /// Create a new capture instance with the default stream buffer size.
     pub fn new() -> io::Result<Self> {
+        Self::new_with_buffer_size_multiplier(DEFAULT_BUFFER_SIZE_MULTIPLIER)
+    }
+
+    /// Create a new capture instance whose real-time stream buffer is `buffer_size_multiplier`
+    /// times the driver's base buffer.
+    ///
+    /// The multiplier only reaches the real-time backend (Windows 11+). A capture that falls back
+    /// to the legacy backend ignores it. See [DEFAULT_BUFFER_SIZE_MULTIPLIER] for the default.
+    pub fn new_with_buffer_size_multiplier(buffer_size_multiplier: u16) -> io::Result<Self> {
         // Try to use the RealTimeBackend first (Windows 11+)
         // Fall back to LegacyBackend if RealTimeBackend is not available
-        let backend = match RealTimeBackend::new() {
+        let backend = match RealTimeBackend::new(buffer_size_multiplier) {
             Ok(backend) => DispatchCaptureBackend::RealTime(backend),
             Err(_) => DispatchCaptureBackend::Legacy(LegacyBackend::new()?),
         };
@@ -485,5 +501,15 @@ impl Drop for EtlCapture {
         if let Err(e) = self.consumer.stop() {
             debug!("Failed to stop ETL capture: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_capture_that_does_not_pick_a_multiplier_uses_one_base_buffer() {
+        assert_eq!(DEFAULT_BUFFER_SIZE_MULTIPLIER, 1);
     }
 }
