@@ -269,18 +269,18 @@ pub struct PacketMonitorApi {
         session: PacketMonitorSession,
         capture_constraint: *const PacketMonitorProtocolConstraint,
     ) -> HRESULT,
-    pub enum_data_sources: extern "stdcall" fn(
+    pub enum_data_sources: Option<extern "stdcall" fn(
         handle: PacketMonitorHandle,
         source_kind: PacketMonitorDataSourceKind,
         show_hidden: bool,
         buffer_capacity: u32,
         bytes_needed: *mut u32,
         data_source_list: *mut PacketMonitorDataSourceList,
-    ) -> HRESULT,
-    pub add_single_data_source_to_session: extern "stdcall" fn(
+    ) -> HRESULT>,
+    pub add_single_data_source_to_session: Option<extern "stdcall" fn(
         session: PacketMonitorSession,
         data_source: *const PacketMonitorDataSourceSpecification,
-    ) -> HRESULT,
+    ) -> HRESULT>,
 }
 
 impl PacketMonitorApi {
@@ -290,10 +290,27 @@ impl PacketMonitorApi {
 
             macro_rules! get_proc_address {
                 ($name:expr) => {
-                    transmute(
-                        GetProcAddress(module, s!($name))
-                            .ok_or_else(|| win::Error::from(GetLastError()))?,
-                    )
+                    transmute(GetProcAddress(module, s!($name)).ok_or_else(|| {
+                        let error = win::Error::from(GetLastError());
+                        log::error!("PROBE_MISSING_EXPORT {}", $name);
+                        error
+                    })?)
+                };
+            }
+            let lenient = std::env::var("PKTMON_PROBE_LENIENT").is_ok_and(|v| v == "1");
+            macro_rules! optional_proc_address {
+                ($name:expr) => {
+                    match GetProcAddress(module, s!($name)) {
+                        Some(f) => Some(transmute(f)),
+                        None if lenient => {
+                            log::error!("PROBE_MISSING_OPTIONAL_EXPORT {}", $name);
+                            None
+                        }
+                        None => {
+                            log::error!("PROBE_MISSING_EXPORT {}", $name);
+                            return Err(win::Error::from(GetLastError()));
+                        }
+                    }
                 };
             }
 
@@ -309,8 +326,8 @@ impl PacketMonitorApi {
                 close_session_handle: get_proc_address!("PacketMonitorCloseSessionHandle"),
                 close_realtime_stream: get_proc_address!("PacketMonitorCloseRealtimeStream"),
                 add_capture_constraint: get_proc_address!("PacketMonitorAddCaptureConstraint"),
-                enum_data_sources: get_proc_address!("PacketMonitorEnumDataSources"),
-                add_single_data_source_to_session: get_proc_address!(
+                enum_data_sources: optional_proc_address!("PacketMonitorEnumDataSources"),
+                add_single_data_source_to_session: optional_proc_address!(
                     "PacketMonitorAddSingleDataSourceToSession"
                 ),
             })
