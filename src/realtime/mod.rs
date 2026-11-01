@@ -300,8 +300,12 @@ impl RealTimeBackend {
         &self,
     ) -> std::io::Result<Vec<c_api::PacketMonitorDataSourceSpecification>> {
         let mut bytes_needed = 0;
+        let enum_data_sources = self
+            .api
+            .enum_data_sources
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Unsupported))?;
 
-        (self.api.enum_data_sources)(
+        (enum_data_sources)(
             self.handle,
             c_api::PacketMonitorDataSourceKind::PacketMonitorDataSourceKindAll,
             true,
@@ -318,7 +322,7 @@ impl RealTimeBackend {
 
         trace!("Bytes needed: {}, align: {}", bytes_needed, align);
 
-        (self.api.enum_data_sources)(
+        (enum_data_sources)(
             self.handle,
             c_api::PacketMonitorDataSourceKind::PacketMonitorDataSourceKindAll,
             true,
