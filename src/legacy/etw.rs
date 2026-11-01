@@ -60,6 +60,13 @@ enum PktMonKeywords {
 // We only care about the payload keyword
 const DEFAULT_KEYWORDS: u64 = PktMonKeywords::Payload as u64;
 
+/// Size of one buffer of the real-time session, in KiB.
+///
+/// The consumer process commits one copy of every session buffer, and Windows gave the session
+/// 40 of them on the measured PC. 16 MiB buffers cost 640 MiB there. Under a 29 MiB/s download,
+/// 64 KiB buffers lost events, 128 KiB and larger lost none, and 256 KiB stayed near 31 MiB.
+const SESSION_BUFFER_KB: u32 = 256;
+
 #[repr(C)]
 struct SessionProperties {
     properties: EVENT_TRACE_PROPERTIES,
@@ -88,7 +95,7 @@ impl Default for SessionProperties {
 
         session.properties.LogFileMode =
             EVENT_TRACE_INDEPENDENT_SESSION_MODE | EVENT_TRACE_REAL_TIME_MODE;
-        session.properties.BufferSize = 16384; // 16MB
+        session.properties.BufferSize = SESSION_BUFFER_KB;
         session.properties.FlushTimer = 1; // 1 second
 
         session.properties.LoggerNameOffset = std::mem::offset_of!(Self, logger_name) as u32;
