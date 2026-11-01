@@ -95,7 +95,9 @@ impl Default for SessionProperties {
 
         session.properties.LogFileMode =
             EVENT_TRACE_INDEPENDENT_SESSION_MODE | EVENT_TRACE_REAL_TIME_MODE;
-        session.properties.BufferSize = SESSION_BUFFER_KB;
+        session.properties.BufferSize = crate::probe::knob("PKTMON_PROBE_BUFFER_KB").unwrap_or(SESSION_BUFFER_KB);
+        session.properties.MinimumBuffers = crate::probe::knob("PKTMON_PROBE_MIN_BUFFERS").unwrap_or(0);
+        session.properties.MaximumBuffers = crate::probe::knob("PKTMON_PROBE_MAX_BUFFERS").unwrap_or(0);
         session.properties.FlushTimer = 1; // 1 second
 
         session.properties.LoggerNameOffset = std::mem::offset_of!(Self, logger_name) as u32;
