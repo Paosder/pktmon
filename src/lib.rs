@@ -57,6 +57,7 @@ use legacy::{EtlConsumer, LegacyBackend};
 use log::{debug, info};
 use realtime::RealTimeBackend;
 pub use delay::{DELAY_BOUNDS_MS, DELAY_BUCKETS, DelaySnapshot, take_delivery_delay};
+pub use missed::{MissedPackets, missed_packets};
 pub use realtime::packets_dropped_after_receiver_closed;
 use std::{
     fmt::Debug,
@@ -74,6 +75,7 @@ pub mod filter;
 mod legacy;
 mod limits;
 mod lock;
+mod missed;
 mod realtime;
 pub mod stream;
 mod util;
