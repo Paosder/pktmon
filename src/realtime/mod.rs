@@ -134,6 +134,11 @@ extern "stdcall" fn data_callback(
 
     trace!("Packet type: {:?}", metadata.packet_type);
 
+    crate::missed::record_missed_packets(
+        descriptor.missed_packet_write_count,
+        descriptor.missed_packet_read_count,
+    );
+
     if descriptor.missed_packet_write_count > 0 {
         warn!(
             "missed writing packets!!: {}",
