@@ -233,8 +233,9 @@ extern "stdcall" fn data_callback(
 
 /// The configuration for a real-time stream.
 ///
-/// `buffer_size_multiplier` is how many base buffers (64 MiB each) the stream reserves.
-/// `truncation_size` cuts every frame at 9000 bytes, which is the largest the driver accepts.
+/// `buffer_size_multiplier` is how many base buffers (256 KiB each) the stream reserves, brought
+/// into the 1 to 10 the driver accepts. `truncation_size` cuts every frame at 9000 bytes, which is
+/// the largest the driver accepts.
 fn realtime_stream_config(
     user_context: *mut c_void,
     buffer_size_multiplier: u16,
@@ -243,14 +244,16 @@ fn realtime_stream_config(
         user_context,
         event_callback: event_callback as *mut _,
         data_callback: data_callback as *mut _,
-        buffer_size_multiplier,
+        buffer_size_multiplier: crate::limits::buffer_size_multiplier_in_range(
+            buffer_size_multiplier,
+        ),
         truncation_size: 9000, // Max value
     }
 }
 
 impl RealTimeBackend {
     /// Open a real-time capture whose stream buffer is `buffer_size_multiplier` times the
-    /// driver's base buffer (64 MiB).
+    /// driver's base buffer (256 KiB).
     pub fn new(buffer_size_multiplier: u16) -> std::io::Result<Self> {
         let api = c_api::PacketMonitorApi::new()?;
 
@@ -518,6 +521,18 @@ mod tests {
         assert_eq!(base.buffer_size_multiplier, 1);
         let wide = realtime_stream_config(std::ptr::null_mut(), 10);
         assert_eq!(wide.buffer_size_multiplier, 10);
+    }
+
+    #[test]
+    fn a_multiplier_the_driver_would_refuse_is_not_sent_to_it() {
+        assert_eq!(
+            realtime_stream_config(std::ptr::null_mut(), 0).buffer_size_multiplier,
+            1
+        );
+        assert_eq!(
+            realtime_stream_config(std::ptr::null_mut(), 11).buffer_size_multiplier,
+            10
+        );
     }
 
     #[test]
