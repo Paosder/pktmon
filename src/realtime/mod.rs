@@ -25,6 +25,9 @@ mod c_filter;
 struct MonitorContext {
     sender: mpsc::Sender<Packet>,
 
+    /// What this stream has reported as missed, so a total the driver repeats is counted once.
+    missed: crate::missed::StreamMissed,
+
     #[cfg(feature = "tokio")]
     notify: Option<std::sync::Weak<tokio::sync::Notify>>,
 }
@@ -134,22 +137,23 @@ extern "stdcall" fn data_callback(
 
     trace!("Packet type: {:?}", metadata.packet_type);
 
-    crate::missed::record_missed_packets(
+    let (missed_writing, missed_reading) = crate::missed::record_missed_packets(
+        &context.missed,
         descriptor.missed_packet_write_count,
         descriptor.missed_packet_read_count,
     );
 
-    if descriptor.missed_packet_write_count > 0 {
+    if missed_writing > 0 {
         warn!(
-            "missed writing packets!!: {}",
-            descriptor.missed_packet_write_count
+            "missed writing packets!!: {} more, {} in total on this stream",
+            missed_writing, descriptor.missed_packet_write_count
         );
     }
 
-    if descriptor.missed_packet_read_count > 0 {
+    if missed_reading > 0 {
         warn!(
-            "missed reading packets!!: {}",
-            descriptor.missed_packet_read_count
+            "missed reading packets!!: {} more, {} in total on this stream",
+            missed_reading, descriptor.missed_packet_read_count
         );
     }
 
@@ -271,6 +275,7 @@ impl RealTimeBackend {
 
         let context_box = Box::new(MonitorContext {
             sender,
+            missed: crate::missed::StreamMissed::new(),
 
             #[cfg(feature = "tokio")]
             notify: notify.clone().map(|n| std::sync::Arc::downgrade(&n)),
