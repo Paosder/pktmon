@@ -263,10 +263,13 @@ impl Debug for Capture {
 
 /// The real-time stream buffer size multiplier used when the caller does not pick one.
 ///
-/// The driver sizes the stream buffer as this multiple of its base buffer (64 MiB), so a capture
-/// reserves `multiplier` times that memory for as long as it lives. One base buffer is enough for
-/// the traffic this crate captures.
-pub const DEFAULT_BUFFER_SIZE_MULTIPLIER: u16 = 1;
+/// The driver sizes the stream buffer as this multiple of its 256 KiB base buffer, and accepts a
+/// multiplier from 1 to 10 (Microsoft's `PacketMonitorCreateRealtimeStream` documentation). The
+/// largest is 2.5 MiB. One base buffer holds about 29 packets at the 9000-byte truncation, and the
+/// stream reports a packet once for each component it passes, so the default is the largest the
+/// driver accepts. The 640 MiB private region once blamed on this setting came from the legacy
+/// ETW session's 16 MiB buffers, not from the real-time stream.
+pub const DEFAULT_BUFFER_SIZE_MULTIPLIER: u16 = limits::MAX_BUFFER_SIZE_MULTIPLIER;
 
 impl Capture {
     /// Create a new capture instance with the default stream buffer size.
@@ -275,7 +278,8 @@ impl Capture {
     }
 
     /// Create a new capture instance whose real-time stream buffer is `buffer_size_multiplier`
-    /// times the driver's base buffer.
+    /// times the driver's 256 KiB base buffer. A value outside 1 to 10, the range the driver
+    /// accepts, is brought into it.
     ///
     /// The multiplier only reaches the real-time backend (Windows 11+). A capture that falls back
     /// to the legacy backend ignores it. See [DEFAULT_BUFFER_SIZE_MULTIPLIER] for the default.
@@ -511,7 +515,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_capture_that_does_not_pick_a_multiplier_uses_one_base_buffer() {
-        assert_eq!(DEFAULT_BUFFER_SIZE_MULTIPLIER, 1);
+    fn a_capture_that_does_not_pick_a_multiplier_uses_the_largest_the_driver_accepts() {
+        assert_eq!(DEFAULT_BUFFER_SIZE_MULTIPLIER, 10);
     }
 }
