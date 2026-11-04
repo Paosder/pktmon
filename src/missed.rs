@@ -72,6 +72,18 @@ mod tests {
         assert_eq!(stats.snapshot(), MissedPackets { write: 7, read: 6 });
     }
 
+    // Field data from a 1.14.0 app session: after 2,200,741 frames the write+read total grew by
+    // exactly 6 per frame for the next 12 million frames. A driver that carries 6 on every callback
+    // of a stream missed 6 packets once, not 6 more on each packet.
+    #[test]
+    fn a_total_the_driver_repeats_on_every_callback_is_counted_once() {
+        let stats = MissedStats::new();
+        for _ in 0..1000 {
+            stats.record(6, 0);
+        }
+        assert_eq!(stats.snapshot(), MissedPackets { write: 6, read: 0 });
+    }
+
     #[test]
     fn reading_the_counts_does_not_clear_them() {
         let stats = MissedStats::new();
