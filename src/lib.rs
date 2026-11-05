@@ -57,6 +57,10 @@ use legacy::{EtlConsumer, LegacyBackend};
 use log::{debug, info};
 use realtime::RealTimeBackend;
 pub use delay::{DELAY_BOUNDS_MS, DELAY_BUCKETS, DelaySnapshot, take_delivery_delay};
+pub use events::{
+    DROP_REASON_SLOTS, DropEvents, REASON_INSUFFICIENT_BUFFER, StreamEvents, drop_events,
+    stream_events,
+};
 pub use missed::{MissedPackets, missed_packets};
 pub use realtime::packets_dropped_after_receiver_closed;
 use std::{
@@ -71,6 +75,7 @@ mod clock;
 mod ctypes;
 mod delay;
 mod dll;
+mod events;
 pub mod filter;
 mod legacy;
 mod limits;
@@ -252,6 +257,7 @@ impl CaptureBackend for DispatchCaptureBackend {
 /// primitives like `Arc<Mutex<Capture>>`. See the examples directory for a threaded example.
 pub struct Capture {
     backend: DispatchCaptureBackend,
+    granted_truncation_size: u16,
     running: bool,
 }
 
@@ -271,10 +277,37 @@ impl Debug for Capture {
 /// ETW session's 16 MiB buffers, not from the real-time stream.
 pub const DEFAULT_BUFFER_SIZE_MULTIPLIER: u16 = limits::MAX_BUFFER_SIZE_MULTIPLIER;
 
+/// How a [`Capture`] opens its real-time stream.
+///
+/// The legacy backend ignores all of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureOptions {
+    /// How many 256 KiB base buffers the stream reserves, brought into the 1 to 10 the driver
+    /// accepts. See [DEFAULT_BUFFER_SIZE_MULTIPLIER].
+    pub buffer_size_multiplier: u16,
+    /// The size in bytes at which the driver cuts a frame, at least 64. The default is 9000.
+    ///
+    /// Microsoft documents 9000 as the maximum, and the driver's behavior above it is unverified.
+    /// A larger size is asked for as given, so that a receive-coalesced frame of up to 64 KB can
+    /// arrive whole. If the real-time stream cannot be created with it, the capture retries the
+    /// real-time stream once with 9000 before it falls back to the legacy backend. Read the size
+    /// in effect from [`Capture::granted_truncation_size()`].
+    pub truncation_size: u16,
+}
+
+impl Default for CaptureOptions {
+    fn default() -> Self {
+        Self {
+            buffer_size_multiplier: DEFAULT_BUFFER_SIZE_MULTIPLIER,
+            truncation_size: limits::DOCUMENTED_MAX_TRUNCATION_SIZE,
+        }
+    }
+}
+
 impl Capture {
-    /// Create a new capture instance with the default stream buffer size.
+    /// Create a new capture instance with the default [`CaptureOptions`].
     pub fn new() -> io::Result<Self> {
-        Self::new_with_buffer_size_multiplier(DEFAULT_BUFFER_SIZE_MULTIPLIER)
+        Self::new_with_options(CaptureOptions::default())
     }
 
     /// Create a new capture instance whose real-time stream buffer is `buffer_size_multiplier`
@@ -284,17 +317,41 @@ impl Capture {
     /// The multiplier only reaches the real-time backend (Windows 11+). A capture that falls back
     /// to the legacy backend ignores it. See [DEFAULT_BUFFER_SIZE_MULTIPLIER] for the default.
     pub fn new_with_buffer_size_multiplier(buffer_size_multiplier: u16) -> io::Result<Self> {
+        Self::new_with_options(CaptureOptions {
+            buffer_size_multiplier,
+            ..CaptureOptions::default()
+        })
+    }
+
+    /// Create a new capture instance that opens its real-time stream as `options` says.
+    ///
+    /// The options only reach the real-time backend (Windows 11+). A capture that falls back to
+    /// the legacy backend ignores them. See [`CaptureOptions::truncation_size`] for what happens
+    /// when the driver refuses a size above 9000.
+    pub fn new_with_options(options: CaptureOptions) -> io::Result<Self> {
         // Try to use the RealTimeBackend first (Windows 11+)
         // Fall back to LegacyBackend if RealTimeBackend is not available
-        let backend = match RealTimeBackend::new(buffer_size_multiplier) {
-            Ok(backend) => DispatchCaptureBackend::RealTime(backend),
-            Err(_) => DispatchCaptureBackend::Legacy(LegacyBackend::new()?),
-        };
+        let (backend, granted_truncation_size) =
+            match limits::open_with_truncation_fallback(options.truncation_size, |size| {
+                RealTimeBackend::new(options.buffer_size_multiplier, size)
+            }) {
+                Ok((backend, granted)) => (DispatchCaptureBackend::RealTime(backend), granted),
+                Err(_) => (DispatchCaptureBackend::Legacy(LegacyBackend::new()?), 0),
+            };
 
         Ok(Self {
             backend,
+            granted_truncation_size,
             running: false,
         })
+    }
+
+    /// The truncation size the real-time stream was created with, in bytes.
+    ///
+    /// This is the requested size brought up to the minimum of 64, or 9000 when the driver
+    /// refused a larger request. It is 0 when the capture uses the legacy backend.
+    pub fn granted_truncation_size(&self) -> u16 {
+        self.granted_truncation_size
     }
 
     /// Start the capture.
@@ -517,5 +574,16 @@ mod tests {
     #[test]
     fn a_capture_that_does_not_pick_a_multiplier_uses_the_largest_the_driver_accepts() {
         assert_eq!(DEFAULT_BUFFER_SIZE_MULTIPLIER, 10);
+    }
+
+    #[test]
+    fn default_options_reproduce_the_settings_the_crate_always_used() {
+        assert_eq!(
+            CaptureOptions::default(),
+            CaptureOptions {
+                buffer_size_multiplier: 10,
+                truncation_size: 9000,
+            }
+        );
     }
 }

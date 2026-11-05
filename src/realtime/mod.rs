@@ -89,9 +89,14 @@ extern "stdcall" fn event_callback(
                 "Packet monitor stream started with buffer size {} and truncation size {}",
                 info.packet_buffer_size_in_bytes, info.truncation_size
             );
+            crate::events::EVENTS.record_started(
+                info.truncation_size,
+                u64::from(info.packet_buffer_size_in_bytes),
+            );
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventStopped => {
             let info = unsafe { &(*event_info).stream_stop_info };
+            crate::events::EVENTS.record_stopped(info.is_fatal_error, info.reason);
             if info.is_fatal_error {
                 error!(
                     "Fatal packet monitor stream error with reason: {}",
@@ -102,10 +107,16 @@ extern "stdcall" fn event_callback(
             }
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventFatalError => {
+            crate::events::EVENTS.record_fatal();
             error!("Fatal packet monitor stream event");
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventProcessInfo => {
             let info = unsafe { &(*event_info).stream_process_info };
+            crate::events::EVENTS.record_process_info(
+                info.is_warning,
+                info.reason,
+                info.packet_length,
+            );
             if info.is_warning {
                 warn!(
                     "Packet monitor stream warning reason: {}, packet length: {}",
@@ -136,6 +147,8 @@ extern "stdcall" fn data_callback(
     };
 
     trace!("Packet type: {:?}", metadata.packet_type);
+
+    crate::events::EVENTS.record_drop(metadata.drop_reason, metadata.drop_location);
 
     let (missed_writing, missed_reading) = crate::missed::record_missed_packets(
         &context.missed,
@@ -234,11 +247,12 @@ extern "stdcall" fn data_callback(
 /// The configuration for a real-time stream.
 ///
 /// `buffer_size_multiplier` is how many base buffers (256 KiB each) the stream reserves, brought
-/// into the 1 to 10 the driver accepts. `truncation_size` cuts every frame at 9000 bytes, which is
-/// the largest the driver accepts.
+/// into the 1 to 10 the driver accepts. `truncation_size` is where every frame is cut, and is
+/// passed on as given: the caller has already settled on the size to ask the driver for.
 fn realtime_stream_config(
     user_context: *mut c_void,
     buffer_size_multiplier: u16,
+    truncation_size: u16,
 ) -> c_api::PacketMonitorRealTimeStreamConfiguration {
     c_api::PacketMonitorRealTimeStreamConfiguration {
         user_context,
@@ -247,14 +261,14 @@ fn realtime_stream_config(
         buffer_size_multiplier: crate::limits::buffer_size_multiplier_in_range(
             buffer_size_multiplier,
         ),
-        truncation_size: 9000, // Max value
+        truncation_size,
     }
 }
 
 impl RealTimeBackend {
     /// Open a real-time capture whose stream buffer is `buffer_size_multiplier` times the
-    /// driver's base buffer (256 KiB).
-    pub fn new(buffer_size_multiplier: u16) -> std::io::Result<Self> {
+    /// driver's base buffer (256 KiB) and whose frames are cut at `truncation_size` bytes.
+    pub fn new(buffer_size_multiplier: u16, truncation_size: u16) -> std::io::Result<Self> {
         let api = c_api::PacketMonitorApi::new()?;
 
         #[cfg(feature = "tokio")]
@@ -270,7 +284,11 @@ impl RealTimeBackend {
         trace!("Initialized handle {:?}", handle);
 
         let mut session = c_api::PacketMonitorSession::default();
-        (api.create_live_session)(handle, w!("PktMon Rust"), &mut session).ok()?;
+        (api.create_live_session)(handle, w!("PktMon Rust"), &mut session)
+            .ok()
+            .inspect_err(|_| {
+                (api.uninitialize)(handle);
+            })?;
 
         trace!("Created session {:?}", session);
 
@@ -285,11 +303,21 @@ impl RealTimeBackend {
         });
         let context_ptr = &*context_box as *const _;
 
-        let stream_config =
-            realtime_stream_config(context_ptr as *mut c_void, buffer_size_multiplier);
+        let stream_config = realtime_stream_config(
+            context_ptr as *mut c_void,
+            buffer_size_multiplier,
+            truncation_size,
+        );
 
         let mut stream = c_api::PacketMonitorRealTimeStream::default();
-        (api.create_realtime_stream)(handle, &stream_config, &mut stream).ok()?;
+        // A refused stream leaves the handle and the session this attempt made. The caller may open
+        // again, so release them here instead of leaving them to the process exit.
+        (api.create_realtime_stream)(handle, &stream_config, &mut stream)
+            .ok()
+            .inspect_err(|_| {
+                (api.close_session_handle)(session);
+                (api.uninitialize)(handle);
+            })?;
 
         trace!("Created stream {:?}", stream);
 
@@ -517,28 +545,30 @@ mod tests {
 
     #[test]
     fn the_stream_buffer_is_the_multiplier_the_caller_asked_for() {
-        let base = realtime_stream_config(std::ptr::null_mut(), 1);
+        let base = realtime_stream_config(std::ptr::null_mut(), 1, 9000);
         assert_eq!(base.buffer_size_multiplier, 1);
-        let wide = realtime_stream_config(std::ptr::null_mut(), 10);
+        let wide = realtime_stream_config(std::ptr::null_mut(), 10, 9000);
         assert_eq!(wide.buffer_size_multiplier, 10);
     }
 
     #[test]
     fn a_multiplier_the_driver_would_refuse_is_not_sent_to_it() {
         assert_eq!(
-            realtime_stream_config(std::ptr::null_mut(), 0).buffer_size_multiplier,
+            realtime_stream_config(std::ptr::null_mut(), 0, 9000).buffer_size_multiplier,
             1
         );
         assert_eq!(
-            realtime_stream_config(std::ptr::null_mut(), 11).buffer_size_multiplier,
+            realtime_stream_config(std::ptr::null_mut(), 11, 9000).buffer_size_multiplier,
             10
         );
     }
 
     #[test]
-    fn the_stream_cuts_every_frame_at_the_driver_maximum() {
-        let config = realtime_stream_config(std::ptr::null_mut(), 1);
-        assert_eq!(config.truncation_size, 9000);
+    fn the_stream_cuts_every_frame_at_the_size_it_was_granted() {
+        for granted in [64, 1500, 9000, 65535] {
+            let config = realtime_stream_config(std::ptr::null_mut(), 1, granted);
+            assert_eq!(config.truncation_size, granted);
+        }
     }
 
     // The only test that touches the process-wide counter.

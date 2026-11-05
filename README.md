@@ -59,6 +59,41 @@ fn main() {
 }
 ```
 
+## Truncation size
+
+`CaptureOptions` sets how the real-time stream (Windows 11+) is opened. The legacy backend ignores it.
+
+```rust
+use pktmon::{Capture, CaptureOptions};
+
+let capture = Capture::new_with_options(CaptureOptions {
+    truncation_size: 65535, // bytes, at least 64, default 9000
+    ..CaptureOptions::default()
+}).unwrap();
+println!("frames are cut at {} bytes", capture.granted_truncation_size());
+```
+
+Microsoft documents 9000 as the maximum truncation size, and the driver's behavior above it is unverified. A larger size is asked for as given. If the real-time stream cannot be created with it, the capture retries once with 9000 before it falls back to the legacy backend, so asking for more never turns the real-time stream into the legacy one by itself. `granted_truncation_size()` returns the size in effect, or 0 on the legacy backend. `Capture::new()` and `Capture::new_with_buffer_size_multiplier()` behave as before.
+
+## Stream events and drop reasons
+
+The real-time backend counts what the driver reports, so an app can read numbers instead of parsing logs. Both functions return process-wide totals since the process started, so keep the value from when a capture began and subtract it. They hold counts and driver codes only, never packet bytes or addresses. The legacy backend reports neither.
+
+```rust
+let events = pktmon::stream_events();
+println!(
+    "{} warnings, {} errors, {} insufficient buffer (largest packet {} bytes)",
+    events.warnings, events.errors, events.insufficient_buffer, events.insufficient_buffer_max_len
+);
+
+let drops = pktmon::drop_events();
+for (reason, count) in drops.reasons.iter().filter(|(reason, _)| *reason != 0) {
+    println!("drop reason {reason}: {count}");
+}
+```
+
+`StreamEvents` covers the stream-started, stopped and fatal events, the warning and error process-info events, the ones with reason `REASON_INSUFFICIENT_BUFFER` (122) by packet length class, and the buffer and truncation sizes the driver reported at the last start. `DropEvents` counts the packets whose metadata carries a drop reason. The first `DROP_REASON_SLOTS` (8) distinct reasons each get a slot, and the rest are summed in `other`.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
