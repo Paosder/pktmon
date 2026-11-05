@@ -89,9 +89,14 @@ extern "stdcall" fn event_callback(
                 "Packet monitor stream started with buffer size {} and truncation size {}",
                 info.packet_buffer_size_in_bytes, info.truncation_size
             );
+            crate::events::EVENTS.record_started(
+                info.truncation_size,
+                u64::from(info.packet_buffer_size_in_bytes),
+            );
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventStopped => {
             let info = unsafe { &(*event_info).stream_stop_info };
+            crate::events::EVENTS.record_stopped(info.is_fatal_error, info.reason);
             if info.is_fatal_error {
                 error!(
                     "Fatal packet monitor stream error with reason: {}",
@@ -102,10 +107,16 @@ extern "stdcall" fn event_callback(
             }
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventFatalError => {
+            crate::events::EVENTS.record_fatal();
             error!("Fatal packet monitor stream event");
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventProcessInfo => {
             let info = unsafe { &(*event_info).stream_process_info };
+            crate::events::EVENTS.record_process_info(
+                info.is_warning,
+                info.reason,
+                info.packet_length,
+            );
             if info.is_warning {
                 warn!(
                     "Packet monitor stream warning reason: {}, packet length: {}",
