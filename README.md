@@ -59,6 +59,22 @@ fn main() {
 }
 ```
 
+## Truncation size
+
+`CaptureOptions` sets how the real-time stream (Windows 11+) is opened. The legacy backend ignores it.
+
+```rust
+use pktmon::{Capture, CaptureOptions};
+
+let capture = Capture::new_with_options(CaptureOptions {
+    truncation_size: 65535, // bytes, at least 64, default 9000
+    ..CaptureOptions::default()
+}).unwrap();
+println!("frames are cut at {} bytes", capture.granted_truncation_size());
+```
+
+Microsoft documents 9000 as the maximum truncation size, and the driver's behavior above it is unverified. A larger size is asked for as given. If the real-time stream cannot be created with it, the capture retries once with 9000 before it falls back to the legacy backend, so asking for more never turns the real-time stream into the legacy one by itself. `granted_truncation_size()` returns the size in effect, or 0 on the legacy backend. `Capture::new()` and `Capture::new_with_buffer_size_multiplier()` behave as before.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
