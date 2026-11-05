@@ -284,7 +284,11 @@ impl RealTimeBackend {
         trace!("Initialized handle {:?}", handle);
 
         let mut session = c_api::PacketMonitorSession::default();
-        (api.create_live_session)(handle, w!("PktMon Rust"), &mut session).ok()?;
+        (api.create_live_session)(handle, w!("PktMon Rust"), &mut session)
+            .ok()
+            .inspect_err(|_| {
+                (api.uninitialize)(handle);
+            })?;
 
         trace!("Created session {:?}", session);
 
@@ -306,7 +310,14 @@ impl RealTimeBackend {
         );
 
         let mut stream = c_api::PacketMonitorRealTimeStream::default();
-        (api.create_realtime_stream)(handle, &stream_config, &mut stream).ok()?;
+        // A refused stream leaves the handle and the session this attempt made. The caller may open
+        // again, so release them here instead of leaving them to the process exit.
+        (api.create_realtime_stream)(handle, &stream_config, &mut stream)
+            .ok()
+            .inspect_err(|_| {
+                (api.close_session_handle)(session);
+                (api.uninitialize)(handle);
+            })?;
 
         trace!("Created stream {:?}", stream);
 
