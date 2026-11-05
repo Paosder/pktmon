@@ -20,6 +20,7 @@ use crate::{
 
 mod c_api;
 mod c_filter;
+mod metadata;
 
 #[derive(Debug)]
 struct MonitorContext {
@@ -176,6 +177,7 @@ extern "stdcall" fn data_callback(
 
     let packet = Packet {
         component_id: metadata.component_id,
+        metadata: Some(metadata.into()),
         payload: match PacketMonitorPacketType::try_from(metadata.packet_type) {
             Ok(packet_type) => match packet_type {
                 PacketMonitorPacketType::PktMonPayload_Unknown => {
@@ -509,6 +511,7 @@ mod tests {
         Packet {
             component_id,
             payload: PacketPayload::Ethernet(vec![1, 2, 3]),
+            metadata: None,
         }
     }
 

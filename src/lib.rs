@@ -59,6 +59,7 @@ use realtime::RealTimeBackend;
 pub use delay::{DELAY_BOUNDS_MS, DELAY_BUCKETS, DelaySnapshot, take_delivery_delay};
 pub use missed::{MissedPackets, missed_packets};
 pub use realtime::packets_dropped_after_receiver_closed;
+pub use metadata::PacketMetadata;
 pub use start_info::StreamStartInfo;
 use std::{
     fmt::Debug,
@@ -76,6 +77,7 @@ pub mod filter;
 mod legacy;
 mod limits;
 mod lock;
+mod metadata;
 mod missed;
 mod realtime;
 mod start_info;
@@ -124,6 +126,8 @@ pub struct Packet {
     pub component_id: u16,
     /// Packet payload differentiated by captured protocol
     pub payload: PacketPayload,
+    /// What the driver recorded about the packet. `None` on the legacy backend.
+    pub metadata: Option<PacketMetadata>,
 }
 
 pub(crate) trait CaptureBackend: Debug + Send {

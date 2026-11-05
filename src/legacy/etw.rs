@@ -419,6 +419,7 @@ impl EtwConsumer {
                                 2 => PacketPayload::WiFi(payload),
                                 _ => PacketPayload::Unknown(payload),
                             },
+                            metadata: None,
                         }) {
                             error!("Failed to send packet to channel: {:#?}", e);
                         }
