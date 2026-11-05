@@ -45,7 +45,24 @@ pub struct StreamEvents {
     pub reported_buffer_bytes: u64,
 }
 
-/// The counters behind [`StreamEvents`].
+/// How many distinct drop reasons are counted one by one.
+pub const DROP_REASON_SLOTS: usize = 8;
+
+/// Packets the driver reported as dropped, from the metadata that comes with every packet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DropEvents {
+    /// Events whose `drop_reason` is not 0.
+    pub events: u64,
+    /// `(reason, count)`. The first distinct reasons claim a slot in the order they arrive, and an
+    /// empty slot is `(0, 0)`.
+    pub reasons: [(u32, u64); DROP_REASON_SLOTS],
+    /// Events whose reason found no free slot.
+    pub other: u64,
+    /// The `drop_location` of the last dropped event, 0 when there was none.
+    pub last_location: u32,
+}
+
+/// The counters behind [`StreamEvents`] and [`DropEvents`].
 ///
 /// A snapshot reads each counter on its own, so it is not one instant across all of them.
 #[derive(Debug)]
@@ -63,6 +80,11 @@ pub(crate) struct StreamEventLog {
     other_reason_last: AtomicU32,
     reported_truncation_size: AtomicU16,
     reported_buffer_bytes: AtomicU64,
+    drop_events: AtomicU64,
+    drop_reasons: [AtomicU32; DROP_REASON_SLOTS],
+    drop_reason_counts: [AtomicU64; DROP_REASON_SLOTS],
+    drop_other: AtomicU64,
+    drop_last_location: AtomicU32,
 }
 
 impl StreamEventLog {
@@ -81,6 +103,11 @@ impl StreamEventLog {
             other_reason_last: AtomicU32::new(0),
             reported_truncation_size: AtomicU16::new(0),
             reported_buffer_bytes: AtomicU64::new(0),
+            drop_events: AtomicU64::new(0),
+            drop_reasons: [const { AtomicU32::new(0) }; DROP_REASON_SLOTS],
+            drop_reason_counts: [const { AtomicU64::new(0) }; DROP_REASON_SLOTS],
+            drop_other: AtomicU64::new(0),
+            drop_last_location: AtomicU32::new(0),
         }
     }
 
@@ -122,6 +149,53 @@ impl StreamEventLog {
         }
     }
 
+    /// Counts a packet's drop reason. A reason of 0 means the packet was not dropped.
+    pub(crate) fn record_drop(&self, reason: u32, location: u32) {
+        if reason == 0 {
+            return;
+        }
+        self.drop_events.fetch_add(1, Ordering::Relaxed);
+        self.drop_last_location.store(location, Ordering::Relaxed);
+        match self.slot_for(reason) {
+            Some(slot) => self.drop_reason_counts[slot].fetch_add(1, Ordering::Relaxed),
+            None => self.drop_other.fetch_add(1, Ordering::Relaxed),
+        };
+    }
+
+    /// The slot that counts `reason`, claimed from the first empty one when no slot has it yet.
+    /// `None` when every slot belongs to another reason.
+    fn slot_for(&self, reason: u32) -> Option<usize> {
+        for (slot, claimed) in self.drop_reasons.iter().enumerate() {
+            let mut owner = claimed.load(Ordering::Relaxed);
+            if owner == 0 {
+                owner =
+                    match claimed.compare_exchange(0, reason, Ordering::Relaxed, Ordering::Relaxed)
+                    {
+                        Ok(_) => reason,
+                        Err(other) => other,
+                    };
+            }
+            if owner == reason {
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn snapshot_drops(&self) -> DropEvents {
+        DropEvents {
+            events: self.drop_events.load(Ordering::Relaxed),
+            reasons: std::array::from_fn(|slot| {
+                (
+                    self.drop_reasons[slot].load(Ordering::Relaxed),
+                    self.drop_reason_counts[slot].load(Ordering::Relaxed),
+                )
+            }),
+            other: self.drop_other.load(Ordering::Relaxed),
+            last_location: self.drop_last_location.load(Ordering::Relaxed),
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> StreamEvents {
         StreamEvents {
             started: self.started.load(Ordering::Relaxed),
@@ -158,6 +232,13 @@ pub(crate) static EVENTS: StreamEventLog = StreamEventLog::new();
 /// capture began and subtracts it. The legacy backend does not report them.
 pub fn stream_events() -> StreamEvents {
     EVENTS.snapshot()
+}
+
+/// The packets the real-time streams reported as dropped, summed over every capture since the
+/// process started. The counts only grow, like those of [`stream_events()`]. The legacy backend
+/// does not report them.
+pub fn drop_events() -> DropEvents {
+    EVENTS.snapshot_drops()
 }
 
 #[cfg(test)]
@@ -255,5 +336,124 @@ mod tests {
         log.record_stopped(true, 31);
         log.record_stopped(false, 0);
         assert_eq!(log.snapshot().last_stop_reason, 0);
+    }
+
+    #[test]
+    fn a_packet_that_was_not_dropped_is_not_counted() {
+        let log = StreamEventLog::new();
+        log.record_drop(0, 77);
+        assert_eq!(log.snapshot_drops(), DropEvents::default());
+    }
+
+    #[test]
+    fn drop_reasons_claim_slots_in_the_order_they_first_arrive() {
+        let log = StreamEventLog::new();
+        for (reason, location) in [(40, 1), (7, 2), (40, 3), (99, 4), (7, 5), (40, 6)] {
+            log.record_drop(reason, location);
+        }
+        let drops = log.snapshot_drops();
+        assert_eq!(drops.events, 6);
+        assert_eq!(&drops.reasons[..4], [(40, 3), (7, 2), (99, 1), (0, 0)]);
+        assert_eq!(drops.other, 0);
+        assert_eq!(drops.last_location, 6);
+    }
+
+    #[test]
+    fn a_reason_with_no_free_slot_is_counted_in_other() {
+        let log = StreamEventLog::new();
+        for reason in 1..=DROP_REASON_SLOTS as u32 + 2 {
+            log.record_drop(reason, reason * 10);
+        }
+        log.record_drop(1, 5);
+        let drops = log.snapshot_drops();
+        assert_eq!(drops.events, DROP_REASON_SLOTS as u64 + 3);
+        assert_eq!(drops.reasons[0], (1, 2));
+        assert_eq!(
+            drops.reasons[DROP_REASON_SLOTS - 1],
+            (DROP_REASON_SLOTS as u32, 1)
+        );
+        assert_eq!(drops.other, 2);
+        assert_eq!(drops.last_location, 5);
+    }
+
+    #[test]
+    fn drops_and_stream_events_do_not_touch_each_other() {
+        let log = StreamEventLog::new();
+        log.record_drop(5, 1);
+        assert_eq!(log.snapshot(), StreamEvents::default());
+        log.record_process_info(true, 5, 0);
+        assert_eq!(log.snapshot_drops().events, 1);
+    }
+
+    #[test]
+    fn threads_that_race_for_the_same_new_reason_share_one_slot() {
+        const THREADS: u64 = 8;
+        const PER_THREAD: u64 = 1000;
+        let log = StreamEventLog::new();
+        let barrier = std::sync::Barrier::new(THREADS as usize);
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let (log, barrier) = (&log, &barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..PER_THREAD {
+                        log.record_drop(4242, thread as u32 + 1);
+                    }
+                });
+            }
+        });
+        let drops = log.snapshot_drops();
+        let claimed: Vec<_> = drops
+            .reasons
+            .iter()
+            .filter(|(reason, _)| *reason == 4242)
+            .collect();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(*claimed[0], (4242, THREADS * PER_THREAD));
+        assert_eq!(drops.events, THREADS * PER_THREAD);
+        assert_eq!(drops.other, 0);
+        assert_eq!(
+            drops
+                .reasons
+                .iter()
+                .filter(|(reason, _)| *reason != 0)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn threads_that_race_for_different_new_reasons_lose_no_event() {
+        const THREADS: u32 = 8;
+        const PER_THREAD: u64 = 1000;
+        let log = StreamEventLog::new();
+        let barrier = std::sync::Barrier::new(THREADS as usize);
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let (log, barrier) = (&log, &barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for round in 0..PER_THREAD {
+                        // Each thread also drops with the reasons of the others, in a shifted order.
+                        log.record_drop((thread + round as u32) % (THREADS + 2) + 1, 1);
+                    }
+                });
+            }
+        });
+        let drops = log.snapshot_drops();
+        let counted: u64 = drops.reasons.iter().map(|(_, count)| count).sum::<u64>() + drops.other;
+        assert_eq!(drops.events, u64::from(THREADS) * PER_THREAD);
+        assert_eq!(counted, drops.events);
+        let mut claimed: Vec<_> = drops
+            .reasons
+            .iter()
+            .map(|(reason, _)| *reason)
+            .filter(|reason| *reason != 0)
+            .collect();
+        let claimed_len = claimed.len();
+        claimed.sort_unstable();
+        claimed.dedup();
+        assert_eq!(claimed.len(), claimed_len);
+        assert_eq!(claimed_len, DROP_REASON_SLOTS);
     }
 }

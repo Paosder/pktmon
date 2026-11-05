@@ -148,6 +148,8 @@ extern "stdcall" fn data_callback(
 
     trace!("Packet type: {:?}", metadata.packet_type);
 
+    crate::events::EVENTS.record_drop(metadata.drop_reason, metadata.drop_location);
+
     let (missed_writing, missed_reading) = crate::missed::record_missed_packets(
         &context.missed,
         descriptor.missed_packet_write_count,
