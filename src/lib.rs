@@ -271,10 +271,37 @@ impl Debug for Capture {
 /// ETW session's 16 MiB buffers, not from the real-time stream.
 pub const DEFAULT_BUFFER_SIZE_MULTIPLIER: u16 = limits::MAX_BUFFER_SIZE_MULTIPLIER;
 
+/// The real-time stream truncation size, in bytes, used when the caller does not pick one.
+///
+/// 9000 is the largest the driver accepts.
+const DEFAULT_TRUNCATION_SIZE: u16 = limits::MAX_TRUNCATION_SIZE;
+
+/// How a [`Capture`] opens its real-time stream.
+///
+/// Both values are brought into the range the driver accepts. The legacy backend ignores them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureOptions {
+    /// How many 256 KiB base buffers the stream reserves, 1 to 10.
+    /// See [DEFAULT_BUFFER_SIZE_MULTIPLIER].
+    pub buffer_size_multiplier: u16,
+    /// The size in bytes at which the driver cuts a frame, 64 to 9000. 9000 is the maximum
+    /// Microsoft documents.
+    pub truncation_size: u16,
+}
+
+impl Default for CaptureOptions {
+    fn default() -> Self {
+        Self {
+            buffer_size_multiplier: DEFAULT_BUFFER_SIZE_MULTIPLIER,
+            truncation_size: DEFAULT_TRUNCATION_SIZE,
+        }
+    }
+}
+
 impl Capture {
-    /// Create a new capture instance with the default stream buffer size.
+    /// Create a new capture instance with the default [`CaptureOptions`].
     pub fn new() -> io::Result<Self> {
-        Self::new_with_buffer_size_multiplier(DEFAULT_BUFFER_SIZE_MULTIPLIER)
+        Self::new_with_options(CaptureOptions::default())
     }
 
     /// Create a new capture instance whose real-time stream buffer is `buffer_size_multiplier`
@@ -284,9 +311,23 @@ impl Capture {
     /// The multiplier only reaches the real-time backend (Windows 11+). A capture that falls back
     /// to the legacy backend ignores it. See [DEFAULT_BUFFER_SIZE_MULTIPLIER] for the default.
     pub fn new_with_buffer_size_multiplier(buffer_size_multiplier: u16) -> io::Result<Self> {
+        Self::new_with_options(CaptureOptions {
+            buffer_size_multiplier,
+            ..CaptureOptions::default()
+        })
+    }
+
+    /// Create a new capture instance that opens its real-time stream as `options` says.
+    ///
+    /// The options only reach the real-time backend (Windows 11+). A capture that falls back to
+    /// the legacy backend ignores them.
+    pub fn new_with_options(options: CaptureOptions) -> io::Result<Self> {
         // Try to use the RealTimeBackend first (Windows 11+)
         // Fall back to LegacyBackend if RealTimeBackend is not available
-        let backend = match RealTimeBackend::new(buffer_size_multiplier) {
+        let backend = match RealTimeBackend::new(
+            options.buffer_size_multiplier,
+            options.truncation_size,
+        ) {
             Ok(backend) => DispatchCaptureBackend::RealTime(backend),
             Err(_) => DispatchCaptureBackend::Legacy(LegacyBackend::new()?),
         };
@@ -517,5 +558,16 @@ mod tests {
     #[test]
     fn a_capture_that_does_not_pick_a_multiplier_uses_the_largest_the_driver_accepts() {
         assert_eq!(DEFAULT_BUFFER_SIZE_MULTIPLIER, 10);
+    }
+
+    #[test]
+    fn default_options_reproduce_the_settings_the_crate_always_used() {
+        assert_eq!(
+            CaptureOptions::default(),
+            CaptureOptions {
+                buffer_size_multiplier: 10,
+                truncation_size: 9000,
+            }
+        );
     }
 }

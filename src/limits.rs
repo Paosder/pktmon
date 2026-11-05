@@ -21,6 +21,22 @@ pub(crate) fn buffer_size_multiplier_in_range(requested: u16) -> u16 {
     requested.clamp(MIN_BUFFER_SIZE_MULTIPLIER, MAX_BUFFER_SIZE_MULTIPLIER)
 }
 
+/// The smallest real-time stream truncation size, in bytes.
+///
+/// Anything shorter would cut a frame inside its Ethernet and IP headers.
+pub(crate) const MIN_TRUNCATION_SIZE: u16 = 64;
+
+/// The largest real-time stream truncation size, in bytes.
+///
+/// 9000 is the maximum Microsoft documents for `PacketMonitorCreateRealtimeStream`.
+pub(crate) const MAX_TRUNCATION_SIZE: u16 = 9000;
+
+/// The truncation size the stream is created with: the requested one, brought into the range the
+/// driver accepts.
+pub(crate) fn truncation_size_in_range(requested: u16) -> u16 {
+    requested.clamp(MIN_TRUNCATION_SIZE, MAX_TRUNCATION_SIZE)
+}
+
 /// The payload length an event reports, or `None` when it claims more than a packet can hold.
 ///
 /// The consumer allocates a buffer of this size inside the ETW callback. An absurd length from a
@@ -65,5 +81,20 @@ mod tests {
         assert_eq!(buffer_size_multiplier_in_range(0), 1);
         assert_eq!(buffer_size_multiplier_in_range(11), 10);
         assert_eq!(buffer_size_multiplier_in_range(u16::MAX), 10);
+    }
+
+    #[test]
+    fn truncation_sizes_the_driver_accepts_pass_through() {
+        assert_eq!(truncation_size_in_range(MIN_TRUNCATION_SIZE), 64);
+        assert_eq!(truncation_size_in_range(1500), 1500);
+        assert_eq!(truncation_size_in_range(MAX_TRUNCATION_SIZE), 9000);
+    }
+
+    #[test]
+    fn truncation_sizes_outside_the_driver_range_are_brought_into_it() {
+        assert_eq!(truncation_size_in_range(0), 64);
+        assert_eq!(truncation_size_in_range(MIN_TRUNCATION_SIZE - 1), 64);
+        assert_eq!(truncation_size_in_range(MAX_TRUNCATION_SIZE + 1), 9000);
+        assert_eq!(truncation_size_in_range(u16::MAX), 9000);
     }
 }
