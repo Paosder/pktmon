@@ -28,6 +28,9 @@ struct MonitorContext {
     /// What this stream has reported as missed, so a total the driver repeats is counted once.
     missed: crate::missed::StreamMissed,
 
+    /// What the driver reported when this stream started.
+    start_info: crate::start_info::StreamStartSlot,
+
     #[cfg(feature = "tokio")]
     notify: Option<std::sync::Weak<tokio::sync::Notify>>,
 }
@@ -78,7 +81,7 @@ fn deliver_packet(sender: &mpsc::Sender<Packet>, packet: Packet, dropped: &Atomi
 }
 
 extern "stdcall" fn event_callback(
-    _context: *mut c_void,
+    context: *mut c_void,
     event_info: *const c_api::PacketMonitorStreamEventInfo,
     event_kind: c_api::PacketMonitorStreamEventKind,
 ) {
@@ -89,6 +92,12 @@ extern "stdcall" fn event_callback(
                 "Packet monitor stream started with buffer size {} and truncation size {}",
                 info.packet_buffer_size_in_bytes, info.truncation_size
             );
+            if !context.is_null() {
+                // Only the one field is borrowed, because the data callback may hold the rest.
+                let start_info =
+                    unsafe { &*std::ptr::addr_of!((*(context as UserContext)).start_info) };
+                start_info.record(info.packet_buffer_size_in_bytes, info.truncation_size);
+            }
         }
         c_api::PacketMonitorStreamEventKind::PacketMonitorStreamEventStopped => {
             let info = unsafe { &(*event_info).stream_stop_info };
@@ -280,6 +289,7 @@ impl RealTimeBackend {
         let context_box = Box::new(MonitorContext {
             sender,
             missed: crate::missed::StreamMissed::new(),
+            start_info: crate::start_info::StreamStartSlot::new(),
 
             #[cfg(feature = "tokio")]
             notify: notify.clone().map(|n| std::sync::Arc::downgrade(&n)),
@@ -471,6 +481,10 @@ impl CaptureBackend for RealTimeBackend {
 
     fn try_next_packet(&self) -> Result<Packet, mpsc::TryRecvError> {
         self.receiver.try_recv()
+    }
+
+    fn stream_start_info(&self) -> Option<crate::StreamStartInfo> {
+        self.context.start_info.get()
     }
 
     #[cfg(feature = "tokio")]

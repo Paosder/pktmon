@@ -59,6 +59,7 @@ use realtime::RealTimeBackend;
 pub use delay::{DELAY_BOUNDS_MS, DELAY_BUCKETS, DelaySnapshot, take_delivery_delay};
 pub use missed::{MissedPackets, missed_packets};
 pub use realtime::packets_dropped_after_receiver_closed;
+pub use start_info::StreamStartInfo;
 use std::{
     fmt::Debug,
     io,
@@ -77,6 +78,7 @@ mod limits;
 mod lock;
 mod missed;
 mod realtime;
+mod start_info;
 pub mod stream;
 mod util;
 
@@ -133,6 +135,12 @@ pub(crate) trait CaptureBackend: Debug + Send {
     fn next_packet_timeout(&self, timeout: Duration) -> Result<Packet, RecvTimeoutError>;
     fn try_next_packet(&self) -> Result<Packet, TryRecvError>;
 
+    /// What the driver reported when the stream started. `None` for a backend that has no such
+    /// report, and before the event arrived.
+    fn stream_start_info(&self) -> Option<StreamStartInfo> {
+        None
+    }
+
     #[cfg(feature = "tokio")]
     fn notify(&self) -> Option<std::sync::Arc<tokio::sync::Notify>>;
 }
@@ -179,6 +187,10 @@ impl CaptureBackend for DispatchCaptureBackend {
 
     fn try_next_packet(&self) -> Result<Packet, TryRecvError> {
         dispatch!(self, try_next_packet())
+    }
+
+    fn stream_start_info(&self) -> Option<StreamStartInfo> {
+        dispatch!(self, stream_start_info())
     }
 
     #[cfg(feature = "tokio")]
@@ -415,6 +427,15 @@ impl Capture {
     /// Returns an error if the capture isn't running or if the timeout is reached.
     pub fn next_packet_timeout(&self, timeout: Duration) -> Result<Packet, RecvTimeoutError> {
         self.backend.next_packet_timeout(timeout)
+    }
+
+    /// What the driver reported when it started the real-time stream: the packet buffer it
+    /// reserved and the size at which it cuts a frame.
+    ///
+    /// `None` on the legacy backend, and on the real-time backend until the driver's
+    /// stream-started event has arrived, which is after [`start()`](Capture::start).
+    pub fn stream_start_info(&self) -> Option<StreamStartInfo> {
+        self.backend.stream_start_info()
     }
 }
 
