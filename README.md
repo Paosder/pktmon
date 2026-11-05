@@ -59,6 +59,32 @@ fn main() {
 }
 ```
 
+## Stream options and packet metadata
+
+On the real-time backend (Windows 11+) three additions expose more of the stream. The legacy backend ignores the options, `stream_start_info()` returns `None` there, and `Packet::metadata` is `None`.
+
+```rust
+use pktmon::{Capture, CaptureOptions};
+
+let mut capture = Capture::new_with_options(CaptureOptions {
+    truncation_size: 1500, // bytes, brought into 64..=9000 (the default, Microsoft's maximum)
+    ..CaptureOptions::default()
+}).unwrap();
+capture.start().unwrap();
+
+// Set once the driver's stream-started event has arrived.
+if let Some(info) = capture.stream_start_info() {
+    println!("{} byte buffer, truncation {}", info.packet_buffer_size_bytes, info.truncation_size);
+}
+
+let packet = capture.next_packet().unwrap();
+if let Some(metadata) = packet.metadata {
+    println!("drop reason {} at {}", metadata.drop_reason, metadata.drop_location);
+}
+```
+
+`Packet` has a new public field `metadata`, so code that builds a `Packet` with a struct literal needs `metadata: None`.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
